@@ -15,6 +15,7 @@ include("lbfgs.jl")
 include("trunk.jl")
 include("R2.jl")
 include("fomo.jl")
+include("tadam.jl")
 
 # Unconstrained solvers for NLS
 include("trunkls.jl")
