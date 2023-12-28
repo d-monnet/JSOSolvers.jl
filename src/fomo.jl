@@ -175,16 +175,21 @@ function SolverCore.solve!(
   norm_d = norm_∇fk
   satβ = T(0)
   ρk = T(0)
+  dotprod = norm_∇fk^2
   #μ = αk
+  satβavg = 0.
+  satβmin = β
+  nbsiter = 0
   while !done
     λk = step_mult(αk,norm_d,backend)
-    c .= x .- λk .* d
-    ΔTk = dot(∇fk , d) * λk
+    c .= x .- (λk .* d)
+    ΔTk = ((1-satβ)*norm_∇fk^2 + satβ*dotprod) * λk
     fck = obj(nlp, c)
     if fck == -Inf
       set_status!(stats, :unbounded)
       break
     end
+    #ρk = (obj(nlp,x) - fck) / ΔTk
     ρk = (stats.objective - fck) / ΔTk
     # Update regularization parameters
     if ρk >= η2
@@ -194,7 +199,7 @@ function SolverCore.solve!(
     end
 
     # Acceptance of the new candidate
-    if ρk >= η1
+    if ρk >= η1 
       x .= c
       if β!=0
         #μ = αk * (T(1) - β) + αk * β
@@ -203,17 +208,21 @@ function SolverCore.solve!(
       end
       #αk = μ
       set_objective!(stats, fck)
+      callback(nlp, solver, stats)
       grad!(nlp, x, ∇fk)
       norm_∇fk = norm(∇fk)
-      if β!= 0
-        satβ = find_beta(β, m, ∇fk, norm_∇fk)
+      dotprod = dot(m,∇fk)
+      if β != 0
+        satβ = find_beta(β, dotprod, norm_∇fk)
         d .= ∇fk .* (T(1) - satβ) .+ m .* satβ
         norm_d = norm(d)
       else
         d .= ∇fk
         norm_d = norm_∇fk
       end
-      
+      satβavg += satβ
+      satβmin = min(satβmin,satβ)
+      nbsiter += 1
     end
 
     set_iter!(stats, stats.iter + 1)
@@ -239,13 +248,13 @@ function SolverCore.solve!(
       ),
     )
 
-    callback(nlp, solver, stats)
+    # callback(nlp, solver, stats)
 
     done = stats.status != :unknown
   end
 
   set_solution!(stats, x)
-  return stats
+  return stats, satβavg/(nbsiter), satβmin
 end
 
 """
@@ -254,8 +263,7 @@ end
 Compute satβ which saturates the contibution of the momentum term to the gradient.
 satβ is computed such that m.∇f > θ * norm_∇f^2
 """ 
-function find_beta(β::T,m::V,∇f::V,norm_∇f::T;θ = T(1e-1)) where {T,V}
-  dotprod = dot(m,∇f)
+function find_beta(β::T,norm_∇f::T, dotprod::T;θ = T(1e-1)) where {T,V}
   if (1-β)*norm_∇f^2 + β*dotprod > θ * norm_∇f^2
     return β
   else
