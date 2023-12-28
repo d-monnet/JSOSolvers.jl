@@ -280,6 +280,11 @@ function SolverCore.solve!(
   norm_d = norm_∇fk
   βmax = T(0)
   ρk = T(0)
+  dotprod = norm_∇fk^2
+  #μ = αk
+  satβavg = 0.
+  satβmin = β
+  nbsiter = 0
   avgβmax = T(0)
   siter = 0
   oneT = T(1)
@@ -294,6 +299,7 @@ function SolverCore.solve!(
       set_status!(stats, :unbounded)
       break
     end
+    #ρk = (obj(nlp,x) - fck) / ΔTk
     ρk = (stats.objective - fck) / ΔTk
     # Update regularization parameters
     if ρk >= η2
@@ -307,13 +313,14 @@ function SolverCore.solve!(
     end
 
     # Acceptance of the new candidate
-    if ρk >= η1
+    if ρk >= η1 
       x .= c
       if use_momentum
         momentum .= ∇fk .* (oneT - β) .+ momentum .* β
         mdot∇f = dot(momentum, ∇fk)
       end
       set_objective!(stats, fck)
+      callback(nlp, solver, stats)
       grad!(nlp, x, ∇fk)
       norm_∇fk = norm(∇fk)
       if use_momentum
@@ -326,6 +333,7 @@ function SolverCore.solve!(
         avgβmax += βmax
         siter += 1
       end
+      
     end
 
     set_iter!(stats, stats.iter + 1)
@@ -360,9 +368,6 @@ function SolverCore.solve!(
 
     callback(nlp, solver, stats)
 
-    step_underflow && set_status!(stats, :small_step)
-    solver.α == 0 && set_status!(stats, :exception) # :small_nlstep exception should happen before
-
     done = stats.status != :unknown
   end
   if use_momentum
@@ -370,24 +375,23 @@ function SolverCore.solve!(
     stats.solver_specific[:avgβmax] = avgβmax
   end
   set_solution!(stats, x)
-  return stats
+  return stats, satβavg/(nbsiter), satβmin
 end
 
 """
 find_beta(m, mdot∇f, norm_∇f, β, θ1, θ2)
 
-Compute βmax which saturates the contibution of the momentum term to the gradient.
-`βmax` is computed such that the two gradient-related conditions are ensured: 
-1. (1-βmax) * ‖∇f(xk)‖² + βmax * ∇f(xk)ᵀm ≥ θ1 * ‖∇f(xk)‖²
-2. ‖∇f(xk)‖ ≥ θ2 * ‖(1-βmax) * ∇f(xk) .+ βmax .* m‖
-with `m` the momentum term and `mdot∇f = ∇f(xk)ᵀm` 
-"""
-function find_beta(p::V, mdot∇f::T, norm_∇f::T, β::T, θ1::T, θ2::T) where {T, V}
-  n1 = norm_∇f^2 - mdot∇f
-  n2 = norm(p)
-  β1 = n1 > 0 ? (1 - θ1) * norm_∇f^2 / (n1) : β
-  β2 = n2 != 0 ? (1 - θ2) * norm_∇f / (n2) : β
-  return min(β, min(β1, β2))
+Compute satβ which saturates the contibution of the momentum term to the gradient.
+satβ is computed such that m.∇f > θ * norm_∇f^2
+""" 
+function find_beta(β::T,m::V,∇f::V,norm_∇f::T;θ = T(1e-1)) where {T,V}
+  dotprod = dot(m,∇f)
+  if (1-β)*norm_∇f^2 + β*dotprod > θ * norm_∇f^2
+    return β
+  else
+    return ((1-θ)norm_∇f^2)/(norm_∇f^2 - dotprod)
+    #return min(((1-θ)norm_∇f^2)/(norm_∇f^2 - dotprod),β)
+  end
 end
 
 """
