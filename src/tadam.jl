@@ -86,8 +86,7 @@ function TadamSolver(nlp::AbstractNLPModel{T, V}) where {T, V}
   m = fill!(similar(nlp.meta.x0), 0)
   v = fill!(similar(nlp.meta.x0), 0)
   s = fill!(similar(nlp.meta.x0), 0)
-  return TadamSolver{T, V}(x, ∇f, c, m, v, s)
-  return TadamSolver{T, V}(x, ∇f, c, m, v, s)
+  return TadamSolver{T, V}(x, ∇f, c, m, v, g, h, s)
 end
 
 @doc (@doc TadamSolver) function tadam(nlp::AbstractNLPModel{T, V}; kwargs...) where {T, V}
@@ -112,10 +111,8 @@ function SolverCore.solve!(
   rtol::T = √eps(T),
   η1 = eps(T)^(1 / 4),
   η2 = T(0.95),
-  η2 = T(0.95),
   γ1 = T(0.5),
   γ2 = T(2),
-  Δmax = 1/eps(T),
   Δmax = 1/eps(T),
   max_time::Float64 = 30.0,
   max_eval::Int = -1,
@@ -145,6 +142,7 @@ function SolverCore.solve!(
   set_dual_residual!(stats, norm_∇fk)
 
   Δk = norm_∇fk/2^round(log2(norm_∇fk + 1))
+  Δk = norm_∇fk/2^round(log2(norm_∇fk + 1))
   
   # Stopping criterion: 
   ϵ = atol + rtol * norm_∇fk
@@ -153,11 +151,10 @@ function SolverCore.solve!(
     @info("Optimal point found at initial point")
     @info @sprintf "%5s  %9s  %7s  %7s " "iter" "f" "‖∇f‖" "Δ"
     @info @sprintf "%5d  %9.2e  %7.1e  %7.1e" stats.iter stats.objective norm_∇fk Δk
-    @info @sprintf "%5s  %9s  %7s  %7s " "iter" "f" "‖∇f‖" "Δ"
-    @info @sprintf "%5d  %9.2e  %7.1e  %7.1e" stats.iter stats.objective norm_∇fk Δk
   end
   if verbose > 0 && mod(stats.iter, verbose) == 0
     @info @sprintf "%5s  %9s  %7s  %7s  %7s" "iter" "f" "‖∇f‖" "α" "satβ1"
+    infoline = @sprintf "%5d  %9.2e  %7.1e  %7.1e  %7.1e" stats.iter stats.objective norm_∇fk Δk NaN
     infoline = @sprintf "%5d  %9.2e  %7.1e  %7.1e  %7.1e" stats.iter stats.objective norm_∇fk Δk NaN
   end
 
@@ -179,12 +176,11 @@ function SolverCore.solve!(
   done = stats.status != :unknown
   
   satβ1 = T(0)
-  siter=1 # nb of successful iteration
-  μ = T(0)
   while !done
-    solve_tadam_subproblem!(s, ∇fk, m, v, Δk, satβ1, β1, β2, e, siter)
+    solve_tadam_subproblem!(s, ∇fk, m, v, Δk, satβ1)
     c .= x .+ s
 
+    ΔTk = dot(-∇fk, s) - T(0.5)*dot(s.^2, sqrt.(v) .+ 1e-8)
     ΔTk = dot(-∇fk, s) - T(0.5)*dot(s.^2, sqrt.(v) .+ 1e-8)
     fck = obj(nlp, c)
     if fck == -Inf
@@ -195,27 +191,19 @@ function SolverCore.solve!(
     ρk = (stats.objective - fck) / ΔTk
     if ρk >= η2
       Δk = min(Δmax, γ2 * Δk)
+      Δk = min(Δmax, γ2 * Δk)
     elseif ρk < η1
       Δk = Δk * γ1
-    end
-    if Δk == 0.
-      set_status!(stats, :exception)
     end
     # Acceptance of the new candidate
     if ρk >= η1
       siter += 1
       x .= c
-      μ = Δk * (T(1) - β1) + Δk * β1
-      m .= (Δk/μ) .* ∇fk .* (T(1) - β1) .+ m .* β1
-      #m .= ∇fk .* (T(1) - β1) .+ m .* β1
+      set_objective!(stats, fck)
+      m .= ∇fk .* (T(1) - β1) .+ m .* β1
       v .= ∇fk.^2 .* (T(1) - β2) .+ v .*β2
-      cout = callback(nlp, solver, stats)
-      if !isnothing(cout)
-        set_objective!(stats, obj(nlp,x))
-      else
-        set_objective!(stats, fck)
-      end
       grad!(nlp, x, ∇fk)
+      satβ1 = find_beta(β1, m, ∇fk, norm_∇fk)
       dotprod = dot(∇fk,m)
       satβ1 = find_beta(β1, dotprod, norm_∇fk)
       norm_∇fk = norm(∇fk)
@@ -229,7 +217,6 @@ function SolverCore.solve!(
 
     if verbose > 0 && mod(stats.iter, verbose) == 0
       @info infoline
-      infoline = @sprintf "%5d  %9.2e  %7.1e  %7.1e  %7.1e" stats.iter stats.objective norm_∇fk Δk satβ1
       infoline = @sprintf "%5d  %9.2e  %7.1e  %7.1e  %7.1e" stats.iter stats.objective norm_∇fk Δk satβ1
     end
 
@@ -258,11 +245,11 @@ end
 """
   solve_tadam_subproblem!(s, ∇fk, m, v, Δk, satβ1)
 Compute 
-argmin d^Ts + s^T diag(sqrt.(v)) 
+argmin g^Ts + s^T diag(sqrt.(v)) 
 s.t.   ||s||∞ <= Δk      
-with d = (1-satβ1) * ∇fk + satβ1 * m  
+with g = (1-satβ1) * ∇fk + satβ1 * m  
 Stores the argmin in `s`.
 """
-function solve_tadam_subproblem!(s::V, ∇fk::V, m::V, v::V, Δk::T, satβ1::T, β1::T, β2::T, e::T, siter::Int) where {V, T}
-  s .= min.(Δk , max.(-Δk , -(((1-satβ1) .* ∇fk .+ satβ1 .* m) ./ (1-β1^siter) ) ./ ( sqrt.(v ./ (1 - β2^siter)) .+ e ) ) )
+function solve_tadam_subproblem!(s::V, ∇fk::V, m::V, v::V, Δk::T, satβ1::T) where {V, T}
+  s .= min.(Δk , max.(-Δk , -((1-satβ1) .* ∇fk .+ satβ1 .* m) ./ (sqrt.(v) .+ T(1e-8)) ) )
 end
