@@ -87,6 +87,7 @@ function TadamSolver(nlp::AbstractNLPModel{T, V}) where {T, V}
   v = fill!(similar(nlp.meta.x0), 0)
   s = fill!(similar(nlp.meta.x0), 0)
   return TadamSolver{T, V}(x, ∇f, c, m, v, s)
+  return TadamSolver{T, V}(x, ∇f, c, m, v, s)
 end
 
 @doc (@doc TadamSolver) function tadam(nlp::AbstractNLPModel{T, V}; kwargs...) where {T, V}
@@ -111,8 +112,10 @@ function SolverCore.solve!(
   rtol::T = √eps(T),
   η1 = eps(T)^(1 / 4),
   η2 = T(0.95),
+  η2 = T(0.95),
   γ1 = T(0.5),
   γ2 = T(2),
+  Δmax = 1/eps(T),
   Δmax = 1/eps(T),
   max_time::Float64 = 30.0,
   max_eval::Int = -1,
@@ -150,10 +153,12 @@ function SolverCore.solve!(
     @info("Optimal point found at initial point")
     @info @sprintf "%5s  %9s  %7s  %7s " "iter" "f" "‖∇f‖" "Δ"
     @info @sprintf "%5d  %9.2e  %7.1e  %7.1e" stats.iter stats.objective norm_∇fk Δk
+    @info @sprintf "%5s  %9s  %7s  %7s " "iter" "f" "‖∇f‖" "Δ"
+    @info @sprintf "%5d  %9.2e  %7.1e  %7.1e" stats.iter stats.objective norm_∇fk Δk
   end
   if verbose > 0 && mod(stats.iter, verbose) == 0
-    @info @sprintf "%5s  %9s  %7s  %7s  %7s" "iter" "f" "‖∇f‖" "Δ" "satβ1"
-    infoline = @sprintf "%5d  %9.2e  %7.1e  %7.1e  %7.1e" stats.iter stats.objective norm_∇fk Δk 0.
+    @info @sprintf "%5s  %9s  %7s  %7s  %7s" "iter" "f" "‖∇f‖" "α" "satβ1"
+    infoline = @sprintf "%5d  %9.2e  %7.1e  %7.1e  %7.1e" stats.iter stats.objective norm_∇fk Δk NaN
   end
 
   set_status!(
@@ -224,6 +229,7 @@ function SolverCore.solve!(
 
     if verbose > 0 && mod(stats.iter, verbose) == 0
       @info infoline
+      infoline = @sprintf "%5d  %9.2e  %7.1e  %7.1e  %7.1e" stats.iter stats.objective norm_∇fk Δk satβ1
       infoline = @sprintf "%5d  %9.2e  %7.1e  %7.1e  %7.1e" stats.iter stats.objective norm_∇fk Δk satβ1
     end
 
