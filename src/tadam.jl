@@ -330,8 +330,6 @@ mutable struct TadamSolver{T, V} <: AbstractOptimizationSolver
   c::V
   m::V
   v::V
-  g::V
-  h::V
   s::V
 end
 
@@ -341,10 +339,8 @@ function TadamSolver(nlp::AbstractNLPModel{T, V}) where {T, V}
   c = similar(nlp.meta.x0)
   m = fill!(similar(nlp.meta.x0), 0)
   v = fill!(similar(nlp.meta.x0), 0)
-  g = fill!(similar(nlp.meta.x0), 0)
-  h = fill!(similar(nlp.meta.x0), 0)
   s = fill!(similar(nlp.meta.x0), 0)
-  return TadamSolver{T, V}(x, ∇f, c, m, v, g, h, s)
+  return TadamSolver{T, V}(x, ∇f, c, m, v, s)
 end
 
 @doc (@doc TadamSolver) function tadam(nlp::AbstractNLPModel{T, V}; kwargs...) where {T, V}
@@ -368,18 +364,16 @@ function SolverCore.solve!(
   atol::T = √eps(T),
   rtol::T = √eps(T),
   η1 = eps(T)^(1 / 4),
-  η2 = T(0.2),
-  κg = T(0.8),
+  η2 = T(0.95),
   γ1 = T(0.5),
   γ2 = T(2),
-  αmax = 1/eps(T),
+  Δmax = 1/eps(T),
   max_time::Float64 = 30.0,
   max_eval::Int = -1,
   max_iter::Int = typemax(Int),
   β1::T = T(0.9),
   β2::T = T(0.999),
   verbose::Int = 0,
-  backend = qr()
 ) where {T, V}
   unconstrained(nlp) || error("tadam should only be called on unconstrained problems.")
 
@@ -392,9 +386,7 @@ function SolverCore.solve!(
   c = solver.c
   m = solver.m
   v = solver.v
-  g = solver.g
   s = solver.s
-  h = solver.h
   set_iter!(stats, 0)
   set_objective!(stats, obj(nlp, x))
 
@@ -402,19 +394,19 @@ function SolverCore.solve!(
   norm_∇fk = norm(∇fk)
   set_dual_residual!(stats, norm_∇fk)
 
-  αk = init_alpha(norm_∇fk,backend)
+  Δk = norm_∇fk/2^round(log2(norm_∇fk + 1))
   
   # Stopping criterion: 
   ϵ = atol + rtol * norm_∇fk
   optimal = norm_∇fk ≤ ϵ
   if optimal
     @info("Optimal point found at initial point")
-    @info @sprintf "%5s  %9s  %7s  %7s " "iter" "f" "‖∇f‖" "α"
-    @info @sprintf "%5d  %9.2e  %7.1e  %7.1e" stats.iter stats.objective norm_∇fk αk
+    @info @sprintf "%5s  %9s  %7s  %7s " "iter" "f" "‖∇f‖" "Δ"
+    @info @sprintf "%5d  %9.2e  %7.1e  %7.1e" stats.iter stats.objective norm_∇fk Δk
   end
   if verbose > 0 && mod(stats.iter, verbose) == 0
     @info @sprintf "%5s  %9s  %7s  %7s  %7s" "iter" "f" "‖∇f‖" "α" "satβ1"
-    infoline = @sprintf "%5d  %9.2e  %7.1e  %7.1e  %7.1e" stats.iter stats.objective norm_∇fk αk NaN
+    infoline = @sprintf "%5d  %9.2e  %7.1e  %7.1e  %7.1e" stats.iter stats.objective norm_∇fk Δk NaN
   end
 
   set_status!(
@@ -434,18 +426,12 @@ function SolverCore.solve!(
 
   done = stats.status != :unknown
   
+  satβ1 = T(0)
   while !done
-    satβ1 = find_beta(β1, κg, m, ∇fk)
-    g .= (∇fk .* (T(1) - satβ1) .+ m .* satβ1)
-    h .= sqrt.(v) .+ T(1e-8)
-    solve_subproblem!(s, g, h, αk)
+    solve_tadam_subproblem!(s, ∇fk, m, v, Δk, satβ1)
     c .= x .+ s
 
-    ΔTk = dot(-g, s) - T(0.5)*dot(s.^2, h)  
-    
-    m .= ∇fk .* (T(1) - β1) .+ m .* β1
-    v .= ∇fk.^2 .* (T(1) - β2) .+ v .*β2
-
+    ΔTk = dot(-∇fk, s) - T(0.5)*dot(s.^2, sqrt.(v) .+ 1e-8)
     fck = obj(nlp, c)
     if fck == -Inf
       set_status!(stats, :unbounded)
@@ -453,18 +439,20 @@ function SolverCore.solve!(
     end
 
     ρk = (stats.objective - fck) / ΔTk
-    @show ΔTk norm(s) αk ρk
     if ρk >= η2
-      αk = min(αmax, γ2 * αk)
+      Δk = min(Δmax, γ2 * Δk)
     elseif ρk < η1
-      αk = αk * γ1
+      Δk = Δk * γ1
     end
 
     # Acceptance of the new candidate
     if ρk >= η1
       x .= c
       set_objective!(stats, fck)
+      m .= ∇fk .* (T(1) - β1) .+ m .* β1
+      v .= ∇fk.^2 .* (T(1) - β2) .+ v .*β2
       grad!(nlp, x, ∇fk)
+      satβ1 = find_beta(β1, m, ∇fk, norm_∇fk)
       norm_∇fk = norm(∇fk)
     end
 
@@ -475,7 +463,7 @@ function SolverCore.solve!(
 
     if verbose > 0 && mod(stats.iter, verbose) == 0
       @info infoline
-      infoline = @sprintf "%5d  %9.2e  %7.1e  %7.1e  %7.1e" stats.iter stats.objective norm_∇fk αk satβ1
+      infoline = @sprintf "%5d  %9.2e  %7.1e  %7.1e  %7.1e" stats.iter stats.objective norm_∇fk Δk satβ1
     end
 
     set_status!(
@@ -501,24 +489,13 @@ function SolverCore.solve!(
 end
 
 """
-  init_alpha(norm_∇fk::T, ::qr)
-  init_alpha(norm_∇fk::T, ::tr)
-
-Initialize α step size parameter. Ensure first step is the same for quadratic regularization and trust region methods.
+  solve_tadam_subproblem!(s, ∇fk, m, v, Δk, satβ1)
+Compute 
+argmin g^Ts + s^T diag(sqrt.(v)) 
+s.t.   ||s||∞ <= Δk      
+with g = (1-satβ1) * ∇fk + satβ1 * m  
+Stores the argmin in `s`.
 """
-function init_alpha(norm_∇fk::T, ::qr) where{T}
-  1/2^round(log2(norm_∇fk + 1))
-end
-
-function init_alpha(norm_∇fk::T, ::tr) where{T}
-  norm_∇fk/2^round(log2(norm_∇fk + 1))
-end
-
-function solve_subproblem!(s::V, g::V, h::V, Δk::T) where {V, T}
-  p = -g ./ h
-  n = norm(p)
-  if n > Δk
-    p = p .* (Δk/n)
-  end
-  s .= p
+function solve_tadam_subproblem!(s::V, ∇fk::V, m::V, v::V, Δk::T, satβ1::T) where {V, T}
+  s .= min.(Δk , max.(-Δk , -((1-satβ1) .* ∇fk .+ satβ1 .* m) ./ (sqrt.(v) .+ T(1e-8)) ) )
 end
