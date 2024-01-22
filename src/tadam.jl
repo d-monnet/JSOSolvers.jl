@@ -145,6 +145,7 @@ function SolverCore.solve!(
   # Stopping criterion: 
   ϵ = atol + rtol * norm_∇fk
   optimal = norm_∇fk ≤ ϵ
+  
   if optimal
     @info("Optimal point found at initial point")
     @info @sprintf "%5s  %9s  %7s  %7s " "iter" "f" "‖∇f‖" "Δ"
@@ -173,6 +174,7 @@ function SolverCore.solve!(
   done = stats.status != :unknown
   
   satβ1 = T(0)
+  dotprod = norm_∇fk^2
   while !done
     solve_tadam_subproblem!(s, ∇fk, m, v, Δk, satβ1)
     c .= x .+ s
@@ -191,6 +193,7 @@ function SolverCore.solve!(
       Δk = Δk * γ1
     end
 
+
     # Acceptance of the new candidate
     if ρk >= η1
       x .= c
@@ -198,7 +201,8 @@ function SolverCore.solve!(
       m .= ∇fk .* (T(1) - β1) .+ m .* β1
       v .= ∇fk.^2 .* (T(1) - β2) .+ v .*β2
       grad!(nlp, x, ∇fk)
-      satβ1 = find_beta(β1, m, ∇fk, norm_∇fk)
+      dotprod = dot(∇fk,m)
+      satβ1 = find_beta(β1,dotprod, norm_∇fk)
       norm_∇fk = norm(∇fk)
     end
 
