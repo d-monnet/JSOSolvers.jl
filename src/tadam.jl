@@ -7,7 +7,7 @@ Trust-region embeded ADAM (TADAM) algorithm for unconstrained optimization.
 
 For advanced usage, first define a `TadamSolver` to preallocate the memory used in the algorithm, and then call `solve!`:
 
-    solver = TadamSolver(nlp)
+    solver = FomoSolver(nlp)
     solve!(solver, nlp; kwargs...)
 
 # Arguments
@@ -18,14 +18,14 @@ For advanced usage, first define a `TadamSolver` to preallocate the memory used 
 - `atol::T = √eps(T)`: absolute tolerance.
 - `rtol::T = √eps(T)`: relative tolerance: algorithm stops when ‖∇f(xᵏ)‖ ≤ atol + rtol * ‖∇f(x⁰)‖.
 - `η1 = eps(T)^(1/4)`, `η2 = T(0.2)`: step acceptance parameters.
+- `κg = T(0.8)` : maximum contribution of momentum term to the gradient, ||∇f-g||≤κg||g|| with g = (1-β)∇f + β m, with m memory of past gradients. Must satisfy 0 < κg < 1 - η2.
 - `γ1 = T(0.5)`, `γ2 = T(1.1)`: regularization update parameters.
-- `Δmax = 1/eps(T)`: step parameter for tadam algorithm.
+- `αmax = 1/eps(T)`: step parameter for fomo algorithm.
 - `max_eval::Int = -1`: maximum number of evaluation of the objective function.
 - `max_time::Float64 = 30.0`: maximum time limit in seconds.
 - `max_iter::Int = typemax(Int)`: maximum number of iterations.
-- `β1 = T(0.9) ∈ [0,1)` : constant in the momentum term.
-- `β2 = T(0.999) ∈ [0,1)` : constant in the RMSProp term.
-- `e = T(1e-8)` : RMSProp epsilon
+- `β1 = T(0) ∈ [0,1)` : constant in the momentum term.
+- `β2 = T(0) ∈ [0,1)` : constant in the RMSProp term.
 - `verbose::Int = 0`: if > 0, display iteration details every `verbose` iteration.
 - `backend = qr()`: model-based method employed. Options are `qr()` for quadratic regulation and `tr()` for trust-region
 
@@ -87,7 +87,6 @@ function TadamSolver(nlp::AbstractNLPModel{T, V}) where {T, V}
   v = fill!(similar(nlp.meta.x0), 0)
   s = fill!(similar(nlp.meta.x0), 0)
   return TadamSolver{T, V}(x, ∇f, c, m, v, s)
-  return TadamSolver{T, V}(x, ∇f, c, m, v, s)
 end
 
 @doc (@doc TadamSolver) function tadam(nlp::AbstractNLPModel{T, V}; kwargs...) where {T, V}
@@ -112,17 +111,14 @@ function SolverCore.solve!(
   rtol::T = √eps(T),
   η1 = eps(T)^(1 / 4),
   η2 = T(0.95),
-  η2 = T(0.95),
   γ1 = T(0.5),
   γ2 = T(2),
-  Δmax = 1/eps(T),
   Δmax = 1/eps(T),
   max_time::Float64 = 30.0,
   max_eval::Int = -1,
   max_iter::Int = typemax(Int),
   β1::T = T(0.9),
   β2::T = T(0.999),
-  e::T = T(1e-8),
   verbose::Int = 0,
 ) where {T, V}
   unconstrained(nlp) || error("tadam should only be called on unconstrained problems.")
@@ -153,8 +149,6 @@ function SolverCore.solve!(
     @info("Optimal point found at initial point")
     @info @sprintf "%5s  %9s  %7s  %7s " "iter" "f" "‖∇f‖" "Δ"
     @info @sprintf "%5d  %9.2e  %7.1e  %7.1e" stats.iter stats.objective norm_∇fk Δk
-    @info @sprintf "%5s  %9s  %7s  %7s " "iter" "f" "‖∇f‖" "Δ"
-    @info @sprintf "%5d  %9.2e  %7.1e  %7.1e" stats.iter stats.objective norm_∇fk Δk
   end
   if verbose > 0 && mod(stats.iter, verbose) == 0
     @info @sprintf "%5s  %9s  %7s  %7s  %7s" "iter" "f" "‖∇f‖" "α" "satβ1"
@@ -179,10 +173,8 @@ function SolverCore.solve!(
   done = stats.status != :unknown
   
   satβ1 = T(0)
-  siter=1 # nb of successful iteration
-  μ = T(0)
   while !done
-    solve_tadam_subproblem!(s, ∇fk, m, v, Δk, satβ1, β1, β2, e, siter)
+    solve_tadam_subproblem!(s, ∇fk, m, v, Δk, satβ1)
     c .= x .+ s
 
     ΔTk = dot(-∇fk, s) - T(0.5)*dot(s.^2, sqrt.(v) .+ 1e-8)
@@ -198,28 +190,16 @@ function SolverCore.solve!(
     elseif ρk < η1
       Δk = Δk * γ1
     end
-    if Δk == 0.
-      set_status!(stats, :exception)
-    end
+
     # Acceptance of the new candidate
     if ρk >= η1
-      siter += 1
       x .= c
-      μ = Δk * (T(1) - β1) + Δk * β1
-      m .= (Δk/μ) .* ∇fk .* (T(1) - β1) .+ m .* β1
-      #m .= ∇fk .* (T(1) - β1) .+ m .* β1
+      set_objective!(stats, fck)
+      m .= ∇fk .* (T(1) - β1) .+ m .* β1
       v .= ∇fk.^2 .* (T(1) - β2) .+ v .*β2
-      cout = callback(nlp, solver, stats)
-      if !isnothing(cout)
-        set_objective!(stats, obj(nlp,x))
-      else
-        set_objective!(stats, fck)
-      end
       grad!(nlp, x, ∇fk)
-      dotprod = dot(∇fk,m)
-      satβ1 = find_beta(β1, dotprod, norm_∇fk)
+      satβ1 = find_beta(β1, m, ∇fk, norm_∇fk)
       norm_∇fk = norm(∇fk)
-      Δk = μ
     end
 
     set_iter!(stats, stats.iter + 1)
@@ -229,7 +209,6 @@ function SolverCore.solve!(
 
     if verbose > 0 && mod(stats.iter, verbose) == 0
       @info infoline
-      infoline = @sprintf "%5d  %9.2e  %7.1e  %7.1e  %7.1e" stats.iter stats.objective norm_∇fk Δk satβ1
       infoline = @sprintf "%5d  %9.2e  %7.1e  %7.1e  %7.1e" stats.iter stats.objective norm_∇fk Δk satβ1
     end
 
@@ -246,7 +225,7 @@ function SolverCore.solve!(
       ),
     )
 
-    #callback(nlp, solver, stats)
+    callback(nlp, solver, stats)
 
     done = stats.status != :unknown
   end
@@ -258,11 +237,11 @@ end
 """
   solve_tadam_subproblem!(s, ∇fk, m, v, Δk, satβ1)
 Compute 
-argmin d^Ts + s^T diag(sqrt.(v)) 
+argmin g^Ts + s^T diag(sqrt.(v)) 
 s.t.   ||s||∞ <= Δk      
-with d = (1-satβ1) * ∇fk + satβ1 * m  
+with g = (1-satβ1) * ∇fk + satβ1 * m  
 Stores the argmin in `s`.
 """
-function solve_tadam_subproblem!(s::V, ∇fk::V, m::V, v::V, Δk::T, satβ1::T, β1::T, β2::T, e::T, siter::Int) where {V, T}
-  s .= min.(Δk , max.(-Δk , -(((1-satβ1) .* ∇fk .+ satβ1 .* m) ./ (1-β1^siter) ) ./ ( sqrt.(v ./ (1 - β2^siter)) .+ e ) ) )
+function solve_tadam_subproblem!(s::V, ∇fk::V, m::V, v::V, Δk::T, satβ1::T) where {V, T}
+  s .= min.(Δk , max.(-Δk , -((1-satβ1) .* ∇fk .+ satβ1 .* m) ./ (sqrt.(v) .+ T(1e-8)) ) )
 end
