@@ -71,9 +71,12 @@ using Plots
 using DataFrames
 using CSV
 
+###### define paths ######
 data_folder = "docs/src/fomo-paper-data/"
 profile_folder = "docs/src/fomo-paper-figures/"
+table_folder = "docs/src/fomo-paper-tables/"
 ext = ".pdf" # figure format extension
+
 ###### load the results #####
 dimensions = [100,1000,2000,5000]
 solvers = [:tr,:fomo_tr,:r2,:fomo_r2]
@@ -97,13 +100,30 @@ header = Dict(
   :neval_grad => "# ∇f",
   :neval_hess => "# ∇²f",
   :elapsed_time => "t",
-  :avgsatβ => "avg.satβ"
+  :avgsatβ => "avgβmax"
 )
 dim = 1000 # change this value for any element of dimensions (100,1000,2000,5000)
 for solver ∈ solvers
   println("Problems dimension: $dim - Solver:$(solver)")
   pretty_stats(stats[dim][solver][!, cols], hdr_override=header)
 end
+
+###### export table with names and avgβmax ########
+df_list = []
+cols_export = [:name,:avgsatβ]
+for dim in dimensions
+  push!(df_list,rename!(stats[dim][:fomo_r2][!,cols_export], :avgsatβ => "r2_$dim"))
+  push!(df_list,rename!(stats[dim][:fomo_tr][!,cols_export], :avgsatβ => "tr_$dim"))
+end
+dfexp = innerjoin(df_list..., on = :name)
+pretty_stats(dfexp)
+dimmap = [0,100,100,1000,1000,2000,2000,5000,5000]
+algmap = [:none,:fomo_r2,:fomo_tr,:fomo_r2,:fomo_tr,:fomo_r2,:fomo_tr,:fomo_r2,:fomo_tr]
+failmap(data,i,j) = j!=1 &&  (filter(:name => x -> x == data[i,1],stats[dimmap[j]][algmap[j]])[!,:status][1] != "first_order")
+fh = LatexHighlighter(failmap,["cellcolor{black}", "color{white}"])
+io = open(table_folder*"avgbetamax.tex")
+pretty_stats(io,dfexp,backend = Val(:latex),highlighters = fh)
+close(io)
 
 ###### export perfomance profiles ######
 first_order(df) = df.status .== "first_order"
