@@ -285,15 +285,15 @@ function SolverCore.solve!(
   oneT = T(1)
   mdot∇f = T(0) # dot(momentum,∇fk)
   while !done
-    λk = step_mult(solver.α, norm_d, step_backend)
+    λk = step_mult(αk,norm_d,backend)
     c .= x .- λk .* d
-    step_underflow = x == c # step addition underfow on every dimensions, should happen before solver.α == 0
-    ΔTk = ((oneT - βmax) * norm_∇fk^2 + βmax * mdot∇f) * λk # = dot(d,∇fk) * λk with momentum, ‖∇fk‖²λk without momentum
+    ΔTk = dot(∇fk , d) * λk
     fck = obj(nlp, c)
     if fck == -Inf
       set_status!(stats, :unbounded)
       break
     end
+    #ρk = (obj(nlp,x) - fck) / ΔTk
     ρk = (stats.objective - fck) / ΔTk
     # Update regularization parameters
     if ρk >= η2
@@ -307,13 +307,14 @@ function SolverCore.solve!(
     end
 
     # Acceptance of the new candidate
-    if ρk >= η1
+    if ρk >= η1 
       x .= c
       if use_momentum
         momentum .= ∇fk .* (oneT - β) .+ momentum .* β
         mdot∇f = dot(momentum, ∇fk)
       end
       set_objective!(stats, fck)
+      callback(nlp, solver, stats)
       grad!(nlp, x, ∇fk)
       norm_∇fk = norm(∇fk)
       if use_momentum
@@ -370,7 +371,7 @@ function SolverCore.solve!(
     stats.solver_specific[:avgβmax] = avgβmax
   end
   set_solution!(stats, x)
-  return stats
+  return stats, satβavg/(nbsiter), satβmin
 end
 
 """
