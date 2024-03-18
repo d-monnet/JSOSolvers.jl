@@ -192,8 +192,9 @@ function SolverCore.solve!(
     # Acceptance of the new candidate
     if ρk >= η1
       x .= ck
-      set_objective!(stats, fck)
-      grad!(nlp, x, ∇fk)
+      callback(nlp, solver, stats)
+      fxk,_ = objgrad!(nlp, x, ∇fk)
+      set_objective!(stats, fxk)
       norm_∇fk = norm(∇fk)
     end
 
@@ -220,7 +221,7 @@ function SolverCore.solve!(
       ),
     )
     solver.σ = σk
-    callback(nlp, solver, stats)
+    
     σk = solver.σ
 
     done = stats.status != :unknown

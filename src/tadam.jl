@@ -246,14 +246,13 @@ function SolverCore.solve!(
     if ρk >= η1
       siter += 1
       x .= c
-      set_objective!(stats, fck)
       momentum .= ∇fk .* (oneT - β1) .+ momentum .* β1
       bc_second_momentum .=
         (∇fk .^ 2 .* (oneT - β2) .+ bc_second_momentum .* β2 .* (oneT - β2^(siter - 1))) ./
         (oneT - β2^siter) # possibly unstable but avoid allocating two vectors for bias corrected and biased raw second order momentum
       callback(nlp, solver, stats)
-      grad!(nlp, x, ∇fk)
-      stats.objective = obj(nlp,x)
+      fxk, _ = objgrad!(nlp, x, ∇fk)
+      set_objective!(stats, fxk)
       norm_∇fk = norm(∇fk)
       mdot∇f = dot(momentum, ∇fk)
       p .= momentum .- ∇fk
