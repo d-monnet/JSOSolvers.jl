@@ -251,7 +251,9 @@ function SolverCore.solve!(
       bc_second_momentum .=
         (∇fk .^ 2 .* (oneT - β2) .+ bc_second_momentum .* β2 .* (oneT - β2^(siter - 1))) ./
         (oneT - β2^siter) # possibly unstable but avoid allocating two vectors for bias corrected and biased raw second order momentum
+      callback(nlp, solver, stats)
       grad!(nlp, x, ∇fk)
+      stats.objective = obj(nlp,x)
       norm_∇fk = norm(∇fk)
       mdot∇f = dot(momentum, ∇fk)
       p .= momentum .- ∇fk
@@ -283,8 +285,6 @@ function SolverCore.solve!(
         max_time = max_time,
       ),
     )
-
-    callback(nlp, solver, stats)
 
     step_underflow && set_status!(stats, :small_step)
     solver.Δ == 0 && set_status!(stats, :exception) # :small_step exception should happen before
