@@ -5,6 +5,7 @@ using Flux: onehotbatch, onecold
 using Flux.Losses: logitcrossentropy
 using MLDatasets
 using JSOSolvers
+using CUDA
 
 
 const loss = logitcrossentropy
