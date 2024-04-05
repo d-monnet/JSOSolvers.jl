@@ -30,7 +30,7 @@ The keyword arguments may include
 - `max_cgiter::Int = 50`: subproblem iteration limit.
 - `cgtol::T = T(0.1)`: subproblem tolerance.
 - `atol::T = √eps(T)`: absolute tolerance.
-- `rtol::T = √eps(T)`: relative tolerance, the algorithm stops when ‖∇f(xᵏ)‖ ≤ atol + rtol * ‖∇f(x⁰)‖.
+- `rtol::T = √eps(T)`: relative tolerance, the algorithm stops when ‖x - Proj(x - ∇f(xᵏ))‖ ≤ atol + rtol * ‖∇f(x⁰)‖. Proj denotes here the projection over the bounds.
 - `Fatol::T = √eps(T)`: absolute tolerance on the residual.
 - `Frtol::T = eps(T)`: relative tolerance on the residual, the algorithm stops when ‖F(xᵏ)‖ ≤ Fatol + Frtol * ‖F(x⁰)‖.
 - `verbose::Int = 0`: if > 0, display iteration details every `verbose` iteration.
@@ -42,20 +42,7 @@ The keyword arguments of `TronSolverNLS` are passed to the [`TRONTrustRegion`](h
 The value returned is a `GenericExecutionStats`, see `SolverCore.jl`.
 
 # Callback
-The callback is called at each iteration.
-The expected signature of the callback is `callback(nlp, solver, stats)`, and its output is ignored.
-Changing any of the input arguments will affect the subsequent iterations.
-In particular, setting `stats.status = :user` will stop the algorithm.
-All relevant information should be available in `nlp` and `solver`.
-Notably, you can access, and modify, the following:
-- `solver.x`: current iterate;
-- `solver.gx`: current gradient;
-- `stats`: structure holding the output of the algorithm (`GenericExecutionStats`), which contains, among other things:
-  - `stats.dual_feas`: norm of current gradient;
-  - `stats.iter`: current iteration counter;
-  - `stats.objective`: current objective function value;
-  - `stats.status`: current status of the algorithm. Should be `:unknown` unless the algorithm attained a stopping criterion. Changing this to anything will stop the algorithm, but you should use `:user` to properly indicate the intention.
-  - `stats.elapsed_time`: elapsed time in seconds.
+$(Callback_docstring)
 
 # References
 This is an adaptation for bound-constrained nonlinear least-squares problems of the TRON method described in
@@ -340,6 +327,7 @@ function SolverCore.solve!(
       u,
       As,
       max_cgiter = max_cgiter,
+      max_time = max_time - stats.elapsed_time,
       subsolver_verbose = subsolver_verbose,
     )
 
@@ -564,7 +552,7 @@ end
 
 """
 
-    projected_gauss_newton!(solver, x, A, Fx, Δ, gctol, s, max_cgiter, ℓ, u; max_cgiter = 50, subsolver_verbose = 0)
+    projected_gauss_newton!(solver, x, A, Fx, Δ, gctol, s, max_cgiter, ℓ, u; max_cgiter = 50, max_time = Inf, subsolver_verbose = 0)
 
 Compute an approximate solution `d` for
 
@@ -585,8 +573,10 @@ function projected_gauss_newton!(
   u::AbstractVector{T},
   As::AbstractVector{T};
   max_cgiter::Int = 50,
+  max_time::Float64 = Inf,
   subsolver_verbose = 0,
 ) where {T <: Real}
+  start_time, elapsed_time = time(), 0.0
   n = length(x)
   status = ""
 
@@ -602,13 +592,11 @@ function projected_gauss_newton!(
   Fxnorm = norm(Fx)
 
   # Projected Newton Step
-  exit_optimal = false
-  exit_pcg = false
-  exit_itmax = false
+  exit_optimal, exit_pcg, exit_itmax, exit_time = false, false, false, false
   iters = 0
   x .= x .+ s
   project!(x, x, ℓ, u)
-  while !(exit_optimal || exit_pcg || exit_itmax)
+  while !(exit_optimal || exit_pcg || exit_itmax || exit_time)
     active!(ifix, x, ℓ, u)
     if sum(ifix) == n
       exit_optimal = true
@@ -627,6 +615,7 @@ function projected_gauss_newton!(
       radius = Δ,
       rtol = cgtol,
       atol = zero(T),
+      timemax = max_time - elapsed_time,
       verbose = subsolver_verbose,
     )
 
@@ -650,13 +639,21 @@ function projected_gauss_newton!(
     elseif iters >= max_cgiter
       exit_itmax = true
     end
+
+    elapsed_time = time() - start_time
+    exit_time = elapsed_time >= max_time
   end
+
   status = if exit_optimal
     "stationary point found"
+  elseif exit_pcg
+    "on trust-region boundary"
   elseif exit_itmax
     "maximum number of iterations"
+  elseif exit_time
+    "time limit exceeded"
   else
-    status # on trust-region
+    status # unknown
   end
 
   return status

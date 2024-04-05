@@ -31,7 +31,7 @@ The keyword arguments may include
 - `use_only_objgrad::Bool = false`: If `true`, the algorithm uses only the function `objgrad` instead of `obj` and `grad`.
 - `cgtol::T = T(0.1)`: subproblem tolerance.
 - `atol::T = √eps(T)`: absolute tolerance.
-- `rtol::T = √eps(T)`: relative tolerance, the algorithm stops when ‖∇f(xᵏ)‖ ≤ atol + rtol * ‖∇f(x⁰)‖.
+- `rtol::T = √eps(T)`: relative tolerance, the algorithm stops when ‖x - Proj(x - ∇f(xᵏ))‖ ≤ atol + rtol * ‖∇f(x⁰)‖. Proj denotes here the projection over the bounds.
 - `verbose::Int = 0`: if > 0, display iteration details every `verbose` iteration.
 - `subsolver_verbose::Int = 0`: if > 0, display iteration information every `subsolver_verbose` iteration of the subsolver.
 
@@ -41,20 +41,7 @@ The keyword arguments of `TronSolver` are passed to the [`TRONTrustRegion`](http
 The value returned is a `GenericExecutionStats`, see `SolverCore.jl`.
 
 # Callback
-The callback is called at each iteration.
-The expected signature of the callback is `callback(nlp, solver, stats)`, and its output is ignored.
-Changing any of the input arguments will affect the subsequent iterations.
-In particular, setting `stats.status = :user` will stop the algorithm.
-All relevant information should be available in `nlp` and `solver`.
-Notably, you can access, and modify, the following:
-- `solver.x`: current iterate;
-- `solver.gx`: current gradient;
-- `stats`: structure holding the output of the algorithm (`GenericExecutionStats`), which contains, among other things:
-  - `stats.dual_feas`: norm of current gradient;
-  - `stats.iter`: current iteration counter;
-  - `stats.objective`: current objective function value;
-  - `stats.status`: current status of the algorithm. Should be `:unknown` unless the algorithm has attained a stopping criterion. Changing this to anything will stop the algorithm, but you should use `:user` to properly indicate the intention.
-  - `stats.elapsed_time`: elapsed time in seconds.
+$(Callback_docstring)
 
 # References
 TRON is described in
@@ -315,6 +302,7 @@ function SolverCore.solve!(
       s,
       Hs,
       max_cgiter = max_cgiter,
+      max_time = max_time - stats.elapsed_time,
       subsolver_verbose = subsolver_verbose,
     )
 
@@ -538,7 +526,7 @@ end
 
 """
 
-    projected_newton!(solver, x, H, g, Δ, cgtol, ℓ, u, s, Hs; max_cgiter = 50, subsolver_verbose = 0)
+    projected_newton!(solver, x, H, g, Δ, cgtol, ℓ, u, s, Hs; max_time = Inf, max_cgiter = 50, subsolver_verbose = 0)
 
 Compute an approximate solution `d` for
 
@@ -559,8 +547,10 @@ function projected_newton!(
   s::AbstractVector{T},
   Hs::AbstractVector{T};
   max_cgiter::Int = 50,
+  max_time::Float64 = Inf,
   subsolver_verbose = 0,
 ) where {T <: Real}
+  start_time, elapsed_time = time(), 0.0
   n = length(x)
   status = ""
 
@@ -572,13 +562,11 @@ function projected_newton!(
   mul!(Hs, H, s)
 
   # Projected Newton Step
-  exit_optimal = false
-  exit_pcg = false
-  exit_itmax = false
+  exit_optimal, exit_pcg, exit_itmax, exit_time = false, false, false, false
   iters = 0
   x .= x .+ s
   project!(x, x, ℓ, u)
-  while !(exit_optimal || exit_pcg || exit_itmax)
+  while !(exit_optimal || exit_pcg || exit_itmax || exit_time)
     active!(ifix, x, ℓ, u)
     if sum(ifix) == n
       exit_optimal = true
@@ -600,6 +588,7 @@ function projected_newton!(
       radius = Δ,
       rtol = cgtol,
       atol = zero(T),
+      timemax = max_time - elapsed_time,
       verbose = subsolver_verbose,
     )
 
@@ -627,13 +616,21 @@ function projected_newton!(
     elseif iters >= max_cgiter
       exit_itmax = true
     end
+
+    elapsed_time = time() - start_time
+    exit_time = elapsed_time >= max_time
   end
+
   status = if exit_optimal
     "stationary point found"
+  elseif exit_pcg
+    "on trust-region boundary"
   elseif exit_itmax
     "maximum number of iterations"
+  elseif exit_time
+    "time limit exceeded"
   else
-    status # on trust-region
+    status # unknown
   end
 
   return status
