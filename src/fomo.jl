@@ -20,6 +20,9 @@ mk .= ∇f(xk) .* (1 - βmax) .+ mk .* βmax
 and βmax ∈ [0,β] chosen as to ensure d is gradient-related, i.e., the following 2 conditions are satisfied:
 (1-βmax) .* ∇f(xk) + βmax .* ∇f(xk)ᵀmk ≥ θ1 * ‖∇f(xk)‖² (1)
 ‖∇f(xk)‖ ≥ θ2 * ‖(1-βmax) *. ∇f(xk) + βmax .* mk‖       (2)
+In the nonmonotone case, (1) rewrites
+(1-βmax) .* ∇f(xk) + βmax .* ∇f(xk)ᵀmk + (fm - fk)/μk≥ θ1 * ‖∇f(xk)‖²,
+with fm the greatest objective value over the last M successful iterations, and fk = f(xk).
 
 # Advanced usage
 For advanced usage, first define a `FomoSolver` to preallocate the memory used in the algorithm, and then call `solve!`:
@@ -342,10 +345,10 @@ function SolverCore.solve!(
   oneT = T(1)
   mdot∇f = T(0) # dot(momentum,∇fk)
   while !done
-    αk = step_mult(solver.α, norm_d, step_backend)
-    c .= x .- αk .* d
+    μk = step_mult(solver.α, norm_d, step_backend)
+    c .= x .- μk .* d
     step_underflow = x == c # step addition underfow on every dimensions, should happen before solver.α == 0
-    ΔTk = ((oneT - βmax) * norm_∇fk^2 + βmax * mdot∇f) * αk # = - dot(d,∇fk) * αk with momentum, ‖∇fk‖²αk without momentum
+    ΔTk = ((oneT - βmax) * norm_∇fk^2 + βmax * mdot∇f) * μk # = - dot(d,∇fk) * μk with momentum, ‖∇fk‖²μk without momentum
     fck = obj(nlp, c)
     if fck == -Inf
       set_status!(stats, :unbounded)
@@ -379,7 +382,7 @@ function SolverCore.solve!(
       if use_momentum
         mdot∇f = dot(momentum, ∇fk)
         p .= momentum .- ∇fk
-        βmax = find_beta(p, mdot∇f, norm_∇fk, β, θ1, θ2)
+        βmax = find_beta(p, mdot∇f, norm_∇fk, μk, stats.objective, max_obj_mem, β, θ1, θ2)
         d .= ∇fk .* (oneT - βmax) .+ momentum .* βmax
         norm_d = norm(d)
         use_momentum
@@ -434,18 +437,18 @@ function SolverCore.solve!(
 end
 
 """
-find_beta(m, mdot∇f, norm_∇f, β, θ1, θ2)
+find_beta(m, mdot∇f, norm_∇f, μk, fk, max_obj_mem, β, θ1, θ2)
 
 Compute βmax which saturates the contibution of the momentum term to the gradient.
-`βmax` is computed such that the two gradient-related conditions are ensured: 
-1. (1-βmax) * ‖∇f(xk)‖² + βmax * ∇f(xk)ᵀm ≥ θ1 * ‖∇f(xk)‖²
+`βmax` is computed such that the two gradient-related conditions (first one is relaxed in the nonmonotone case) are ensured: 
+1. (1-βmax) * ‖∇f(xk)‖² + βmax * ∇f(xk)ᵀm + (max_obj_mem - fk)/μk ≥ θ1 * ‖∇f(xk)‖²
 2. ‖∇f(xk)‖ ≥ θ2 * ‖(1-βmax) * ∇f(xk) .+ βmax .* m‖
-with `m` the momentum term and `mdot∇f = ∇f(xk)ᵀm` 
+with `m` the momentum term and `mdot∇f = ∇f(xk)ᵀm`, `fk` the model at s=0, `max_obj_mem` the greatest value of objective over the last M successful iterations.
 """
-function find_beta(p::V, mdot∇f::T, norm_∇f::T, β::T, θ1::T, θ2::T) where {T, V}
+function find_beta(p::V, mdot∇f::T, norm_∇f::T, μk::T, fk::T, max_obj_mem::T, β::T, θ1::T, θ2::T) where {T, V}
   n1 = norm_∇f^2 - mdot∇f
   n2 = norm(p)
-  β1 = n1 > 0 ? (1 - θ1) * norm_∇f^2 / n1 : β
+  β1 = n1 > 0 ? ((1 - θ1) * norm_∇f^2 - (fk - max_obj_mem)/μk ) / n1 : β
   β2 = n2 != 0 ? (1 - θ2) * norm_∇f / n2 : β
   return min(β, min(β1, β2))
 end
