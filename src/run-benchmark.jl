@@ -20,7 +20,7 @@ max_time = Dict(100 => 60., 1000 => 60., 2000 => 120., 5000 => 120.)
 
 # dimensions of problem sets
 #dimensions = [100, 1000, 2000, 5000]
-dimensions = [100, 1000]
+dimensions = [5000]
 NM = [1,2,5,10]
 ############ run solvers on problem sets ##############
 stats = Dict{Int,Any}()
@@ -70,7 +70,7 @@ table_folder = "docs/src/fomo-paper-tables/"
 ext = ".pdf" # figure format extension
 
 ###### load the results #####
-dimensions = [100,1000]
+dimensions = [100,1000,2000,5000]
 NM = [1,2,5,10]
 solvers = [:tr,:fomo_tr,:r2,:fomo_r2]
 stats = Dict{Int,Any}()
@@ -98,7 +98,7 @@ header = Dict(
   :elapsed_time => "t",
   :avgsatβ => "avgβmax"
 )
-dim = 1000 # change this value for any element of dimensions (100,1000,2000,5000)
+dim = 2000 # change this value for any element of dimensions (100,1000,2000,5000)
 for solver ∈ solvers
   println("Problems dimension: $dim - Solver:$(solver)")
   pretty_stats(stats[dim][solver][!, cols], hdr_override=header)
@@ -148,3 +148,22 @@ p_fomo_r2 = profile_solvers(Dict(:fomo_r2_1 => stats[dim][1][:fomo_r2], :fomo_r2
 p_fomo_tr = profile_solvers(Dict(:fomo_tr_1 => stats[dim][1][:fomo_tr], :fomo_tr_2 => stats[dim][2][:fomo_tr],:fomo_tr_5 => stats[dim][5][:fomo_tr],:fomo_tr_10 => stats[dim][10][:fomo_tr]), costs, costnames)
 savefig(p_r2,profile_folder*"R2vsFOMO(R2)_$dim.pdf")
 savefig(p_tr,profile_folder*"TRvsFOMO(TR)_$dim.pdf")
+
+# generate histograms and average betamax value data
+bins = 0:0.2:1.
+hist_fomor2 = Dict{Int,Any}()
+hist_fomotr = Dict{Int,Any}()
+avgbetamax_fomor2 = Dict{Int,Any}()
+avgbetamax_fomotr = Dict{Int,Any}()
+for dim in dimensions
+  hist_fomor2[dim] = Dict{Int,Any}()
+  hist_fomotr[dim] = Dict{Int,Any}()
+  avgbetamax_fomor2[dim] = Dict{Int,Any}()
+  avgbetamax_fomotr[dim] = Dict{Int,Any}()
+  for nm in NM
+    hist_fomor2[dim][nm] = [size(filter(x -> x.avgβmax > bins[i] && x.avgβmax ≤ bins[i+1],  stats[dim][nm][:fomo_r2]),1) for i=1:length(bins)-1]
+    hist_fomotr[dim][nm] = [size(filter(x -> x.avgβmax > bins[i] && x.avgβmax ≤ bins[i+1],  stats[dim][nm][:fomo_tr]),1) for i=1:length(bins)-1]
+    avgbetamax_fomor2[dim][nm] = mean(filter(x -> !isnan(x.avgβmax),stats[dim][nm][:fomo_r2])[!,:avgβmax])
+    avgbetamax_fomotr[dim][nm] = mean(filter(x -> !isnan(x.avgβmax),stats[dim][nm][:fomo_tr])[!,:avgβmax])
+  end
+end
