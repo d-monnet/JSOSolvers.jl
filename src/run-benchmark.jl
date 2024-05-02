@@ -20,8 +20,8 @@ max_time = Dict(100 => 60., 1000 => 60., 2000 => 120., 5000 => 120.)
 
 # dimensions of problem sets
 #dimensions = [100, 1000, 2000, 5000]
-dimensions = [5000]
-NM = [1,2,5,10]
+dimensions = [100,1000,2000,5000]
+NM = [1]
 ############ run solvers on problem sets ##############
 stats = Dict{Int,Any}()
 for dim in dimensions
@@ -31,10 +31,10 @@ for dim in dimensions
 
     #solvers being compared
     solvers = Dict(
-      :r2 => model -> R2(model, atol = atol, rtol = rtol, max_eval = max_eval, max_iter = max_iter, max_time = max_time[dim],M=nm),
-      :tr => model -> fomo(model, atol = atol, rtol = rtol, max_eval = max_eval, max_iter = max_iter, max_time = max_time[dim],M=nm, β = 0.0,step_backend = tr_step()),
-      :fomo_r2 => model -> fomo(model, atol = atol, rtol = rtol, max_eval = max_eval, max_iter = max_iter, max_time = max_time[dim],M=nm, β = 0.9),
-      :fomo_tr => model -> fomo(model, atol = atol, rtol = rtol, max_eval = max_eval, max_iter = max_iter, max_time = max_time[dim],M=nm, β = 0.9,step_backend = tr_step()),
+      #:r2 => model -> R2(model, atol = atol, rtol = rtol, max_eval = max_eval, max_iter = max_iter, max_time = max_time[dim],M=nm,momentum_is_step = true),
+      #:tr => model -> fomo(model, atol = atol, rtol = rtol, max_eval = max_eval, max_iter = max_iter, max_time = max_time[dim],M=nm, β = 0.0,step_backend = tr_step(),momentum_is_step = true),
+      :fomo_r2 => model -> fomo(model, atol = atol, rtol = rtol, max_eval = max_eval, max_iter = max_iter, max_time = max_time[dim],M=nm, β = 0.9,momentum_is_step = true),
+      :fomo_tr => model -> fomo(model, atol = atol, rtol = rtol, max_eval = max_eval, max_iter = max_iter, max_time = max_time[dim],M=nm, β = 0.9,step_backend = tr_step(),momentum_is_step = true),
     )
     # run solvers over the problem set. Skip problems that are constrained or having dimension not within 20% of dim. 
     stats[dim][nm] =  bmark_solvers(
@@ -42,8 +42,8 @@ for dim in dimensions
       skipif=prob -> (!unconstrained(prob) || get_nvar(prob) < dim*0.8 || get_nvar(prob) > dim*1.2 ),
     )
     # add column for average sat\beta to :r2 for consistency
-    stats[dim][nm][:r2][!,:avgsatβ] .= 0.
-    stats[dim][nm][:tr][!,:avgsatβ] .= 0.
+    #stats[dim][nm][:r2][!,:avgsatβ] .= 0.
+    #stats[dim][nm][:tr][!,:avgsatβ] .= 0.
   end
 end
 
@@ -51,7 +51,7 @@ export_folder = "docs/src/bench_data/" # change this for the folder path where y
 for dim in dimensions
   for nm in NM
     for key in keys(stats[dim][nm])
-      CSV.write(export_folder*"$(key)_$(dim)_$(nm).csv",stats[dim][nm][key])
+      CSV.write(export_folder*"$(key)_$(dim)_misd.csv",stats[dim][nm][key])
     end
   end
 end
@@ -73,12 +73,17 @@ ext = ".pdf" # figure format extension
 dimensions = [100,1000,2000,5000]
 NM = [1,2,5,10]
 solvers = [:tr,:fomo_tr,:r2,:fomo_r2]
+misd_solvers = [:fomo_tr_misd,:fomo_r2_misd]
 stats = Dict{Int,Any}()
 load(solver,dim,nm) = DataFrame(CSV.File(data_folder*solver*"_$(dim)_$(nm).csv"))
+load_misd(solver,dim,nm) = DataFrame(CSV.File(data_folder*solver*"_$(dim).csv"))
 for dim in dimensions
   stats[dim] = Dict{Int,Any}()
   for nm in NM
     stats[dim][nm] = Dict([solver => load("$solver",dim,nm) for solver in solvers]...)
+    if nm == 1
+      merge!(stats[dim][nm], Dict([solver => load_misd("$solver",dim,nm) for solver in misd_solvers]...))
+    end
   end
 end
 
@@ -129,15 +134,15 @@ unbounded(df) = df.status .== "unbounded"
 solved(df) = first_order(df) .| unbounded(df)
 costnames = ["time"]
 costs = [
-  #df -> .!solved(df) .* Inf .+ df.elapsed_time,
-  df -> .!solved(df) .* Inf .+ df.iter,
+  df -> .!solved(df) .* Inf .+ df.elapsed_time,
+  #df -> .!solved(df) .* Inf .+ df.iter,
   #df -> .!solved(df) .* Inf .+ df.neval_obj .+ df.neval_grad .+ df.neval_hess,
 ]
 
 gr()
 for dim in dimensions
-  p_r2 = profile_solvers(Dict(:r2 => stats[dim][:r2], :fomo_r2 => stats[dim][:fomo_r2]), costs, costnames)
-  p_tr = profile_solvers(Dict(:r2 => stats[dim][:tr], :fomo_r2 => stats[dim][:fomo_tr]), costs, costnames)
+  p_r2 = profile_solvers(Dict(:r2 => stats[dim][1][:r2], :fomo_r2 => stats[dim][1][:fomo_r2]), costs, costnames)
+  p_tr = profile_solvers(Dict(:r2 => stats[dim][1][:tr], :fomo_r2 => stats[dim][1][:fomo_tr]), costs, costnames)
   savefig(p_r2,profile_folder*"R2vsFOMO(R2)_$dim.pdf")
   savefig(p_tr,profile_folder*"TRvsFOMO(TR)_$dim.pdf")
 end

@@ -50,6 +50,7 @@ For advanced usage, first define a `FomoSolver` to preallocate the memory used i
 - `max_time::Float64 = 30.0`: maximum time limit in seconds.
 - `max_iter::Int = typemax(Int)`: maximum number of iterations.
 - `β = T(0.9) ∈ [0,1)`: target decay rate for the momentum.
+- `momentum_is_step = False` : momentum is set as search direction: m_k = d_k
 - `θ1 = T(0.1)`: momentum contribution parameter for convergence condition (1).
 - `θ2 = T(eps(T)^(1/3))`: momentum contribution parameter for convergence condition (2). 
 - `M = 1` : requires objective decrease over the `M` last iterates (nonmonotone context). `M=1` implies monotone behaviour. 
@@ -104,18 +105,18 @@ stats = solve!(solver, nlp)
 "Execution stats: first-order stationary"
 ```
 """
-mutable struct FomoSolver{T, V} <: AbstractFirstOrderSolver
+mutable struct FomoSolver{T, V, C} <: AbstractFirstOrderSolver
   x::V
   g::V
   c::V
-  m::V
+  m::C
   d::V
   p::V
   o::V
   α::T
 end
 
-function FomoSolver(nlp::AbstractNLPModel{T, V}; M::Int=1) where {T, V}
+function FomoSolver(nlp::AbstractNLPModel{T, V}; M::Int=1, N::Int=1) where {T, V}
   x = similar(nlp.meta.x0)
   g = similar(nlp.meta.x0)
   c = similar(nlp.meta.x0)
@@ -271,6 +272,7 @@ function SolverCore.solve!(
   max_eval::Int = -1,
   max_iter::Int = typemax(Int),
   β::T = T(0.9),
+  momentum_is_step::Bool = False,
   θ1::T = T(0.1),
   θ2::T = T(eps(T)^(1 / 3)),
   verbose::Int = 0,
@@ -381,7 +383,11 @@ function SolverCore.solve!(
     if ρk >= η1
       x .= c
       if use_momentum
-        momentum .= ∇fk .* (oneT - β) .+ momentum .* β
+        if momentum_is_step
+          momentum .= d
+        else
+          momentum .= ∇fk .* (oneT - β) .+ momentum .* β
+        end
       end
       set_objective!(stats, fck)
       circshift!(obj_mem,1)
